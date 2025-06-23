@@ -59,6 +59,7 @@ export type Prestamo = {
   observaciones?: string;
   pago_diario: number;
   es_registro_manual?: boolean;
+  plazo_cuatro_semanas?: boolean;
   created_at?: string;
   updated_at?: string;
 };
