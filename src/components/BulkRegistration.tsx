@@ -6,6 +6,68 @@ import { Users, Plus, Trash2, AlertCircle, CheckCircle, Calculator, Loader2, Cal
 import { useBulkRegistration } from '../hooks/useAdminMutations';
 import moment from 'moment-timezone';
 
+// Función para ajustar una fecha para que no sea domingo
+const adjustDateIfSunday = (date: Date): Date => {
+  const dayOfWeek = date.getDay(); // 0 = Domingo, 1 = Lunes, ..., 6 = Sábado
+  if (dayOfWeek === 0) { // Si es domingo
+    // Mover al lunes siguiente
+    return moment(date).add(1, 'day').toDate();
+  }
+  return date;
+};
+
+// Función para calcular fecha de fin excluyendo domingos
+const calculateEndDateExcludingSundays = (startDate: Date, durationInDays: number): Date => {
+  let currentDate = moment(startDate);
+  let daysAdded = 0;
+  
+  // Si el día de inicio no es domingo, contarlo como el primer día
+  if (currentDate.day() !== 0) { // 0 = Domingo
+    daysAdded = 1;
+  }
+  
+  // Continuar hasta completar la duración
+  while (daysAdded < durationInDays) {
+    currentDate = currentDate.add(1, 'day');
+    
+    // Si no es domingo, contamos este día
+    if (currentDate.day() !== 0) {
+      daysAdded++;
+    }
+  }
+  
+  return currentDate.toDate();
+};
+
+// Función para calcular las fechas del préstamo
+const calculateLoanDates = (plazo: string, useCustomStartDate: boolean, customStartDate?: string) => {
+  let startDate: Date;
+  const duration = parseInt(plazo) || 15;
+  
+  if (useCustomStartDate && customStartDate) {
+    startDate = adjustDateIfSunday(new Date(customStartDate));
+  } else {
+    const mexicoNow = moment.tz('America/Mexico_City');
+    
+    if (duration === 28) {
+      // Para préstamos de 4 semanas, iniciar el mismo día de la siguiente semana
+      const nextWeekSameDay = mexicoNow.clone().add(7, 'days'); // Agregar una semana completa
+      
+      // Si el día resultante es domingo, mover al lunes siguiente
+      startDate = adjustDateIfSunday(nextWeekSameDay.toDate());
+    } else {
+      // Para otros préstamos (15, 20, 23 días), usar mañana
+      const tomorrowDate = mexicoNow.clone().add(1, 'day').toDate();
+      startDate = adjustDateIfSunday(tomorrowDate);
+    }
+  }
+
+  // Para todos los préstamos, usar días hábiles (excluyendo domingos)
+  const endDate = calculateEndDateExcludingSundays(startDate, duration);
+
+  return { startDate, endDate };
+};
+
 const trabajadorSchema = z.object({
   nombre: z.string().min(2, 'Nombre requerido'),
   email: z.string().email('Email inválido'),
@@ -48,18 +110,25 @@ interface BulkRegistrationProps {
   onLoadingChange: (loading: boolean) => void;
 }
 
+interface RegistrationResults {
+  admin: { nombre: string; email: string };
+  trabajadores: Array<{ trabajador: { nombre: string }; clientes: any[] }>;
+  totalClientes: number;
+  totalPrestamos: number;
+}
+
 const BulkRegistration: React.FC<BulkRegistrationProps> = ({ onLoadingChange }) => {
-  const [registrationResults, setRegistrationResults] = useState<any>(null);
+  const [registrationResults, setRegistrationResults] = useState<RegistrationResults | null>(null);
   const bulkRegistration = useBulkRegistration();
 
-  // Función de cálculo exacta de la app original
+  // Función de cálculo actualizada con la lógica de la app móvil
   const calculateLoanDetails = (monto: number, plazo: string) => {
     const amount = monto || 0;
     const duration = parseInt(plazo) || 15;
 
-    // Tabla de cuotas diarias totales por cada $1,000 prestados (igual que en la app)
+    // Tabla de cuotas diarias totales por cada $1,000 prestados
     const cuotaDiariaPorMil = {
-      15: 92,
+      15: 86.67,
       20: 65,
       23: 60,
     };
@@ -232,27 +301,20 @@ const BulkRegistration: React.FC<BulkRegistrationProps> = ({ onLoadingChange }) 
           clientes: trabajadorData.clientes.map(clienteData => {
             const loanDetails = calculateLoanDetails(clienteData.prestamo.monto, clienteData.prestamo.plazo);
 
-            // Determinar la fecha de inicio usando horario de México
-            let fechaInicio: moment.Moment;
-            if (clienteData.prestamo.useCustomStartDate && clienteData.prestamo.customStartDate) {
-              // Usar la fecha personalizada
-              fechaInicio = moment.tz(clienteData.prestamo.customStartDate, 'America/Mexico_City');
-            } else {
-              // Obtener ahora en hora de Ciudad de México y usar mañana como fecha de inicio
-              const mexicoNow = moment.tz('America/Mexico_City');
-              fechaInicio = mexicoNow.clone().add(1, 'day');
-            }
-
-            // Calcular la fecha de fin (siempre automática basada en duración)
-            const fechaFin = fechaInicio.clone().add(parseInt(clienteData.prestamo.plazo) - 1, 'days');
+            // Calcular las fechas usando las nuevas funciones
+            const { startDate, endDate } = calculateLoanDates(
+              clienteData.prestamo.plazo,
+              clienteData.prestamo.useCustomStartDate || false,
+              clienteData.prestamo.customStartDate
+            );
 
             // Calcular si es_registro_manual basado en si el préstamo está en el rango futuro
             const mexicoToday = moment.tz('America/Mexico_City').startOf('day');
-            const fechaFinMoment = fechaFin.clone().startOf('day');
+            const endDateMoment = moment(endDate).startOf('day');
 
             // Si la fecha de fin del préstamo es posterior a hoy, es un préstamo futuro (false)
             // Si la fecha de fin ya pasó, es un registro histórico (true)
-            const isHistoricalRecord = fechaFinMoment.isBefore(mexicoToday);
+            const isHistoricalRecord = endDateMoment.isBefore(mexicoToday);
 
             return {
               nombre: clienteData.nombre,
@@ -265,8 +327,8 @@ const BulkRegistration: React.FC<BulkRegistrationProps> = ({ onLoadingChange }) 
                 trabajador_id: 0, // Se asignará automáticamente en el hook
                 monto: clienteData.prestamo.monto,
                 interes: loanDetails.interestRate,
-                fecha_inicio: fechaInicio.format('YYYY-MM-DD'),
-                fecha_fin: fechaFin.format('YYYY-MM-DD'),
+                fecha_inicio: moment(startDate).format('YYYY-MM-DD'),
+                fecha_fin: moment(endDate).format('YYYY-MM-DD'),
                 pago_diario: clienteData.prestamo.plazo === '28' ? loanDetails.weeklyPayment : loanDetails.dailyPayment,
                 observaciones: clienteData.prestamo.observaciones || '',
                 es_registro_manual: isHistoricalRecord,
