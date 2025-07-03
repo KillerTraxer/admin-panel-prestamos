@@ -128,7 +128,7 @@ const BulkRegistration: React.FC<BulkRegistrationProps> = ({ onLoadingChange }) 
 
     // Tabla de cuotas diarias totales por cada $1,000 prestados
     const cuotaDiariaPorMil = {
-      15: 86.67,
+      15: 85,
       20: 65,
       23: 60,
     };
